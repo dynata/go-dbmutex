@@ -102,9 +102,6 @@ type Driver interface {
 // detect the Driver, it is returned.
 func ResolveDriver(ctx context.Context, db *sql.DB) (Driver, error) {
 	row := db.QueryRowContext(ctx, "select version()")
-	if row.Err() != nil {
-		return nil, dbmerr.NewDriverDetectionError(row.Err())
-	}
 	var version string
 	err := row.Scan(&version)
 	if err != nil {
@@ -120,13 +117,10 @@ func ResolveDriver(ctx context.Context, db *sql.DB) (Driver, error) {
 
 	// For mysql, it is likely that version does not contain "mysql". So check another way.
 	row = db.QueryRowContext(ctx, "show variables where variable_name = 'version'")
-	if row.Err() != nil {
-		return nil, dbmerr.NewDriverDetectionError(row.Err())
-	}
 	var variableName, variableValue string
 	err = row.Scan(&variableName, &variableValue)
 	if err != nil {
-		return nil, dbmerr.NewDriverDetectionError(row.Err())
+		return nil, dbmerr.NewDriverDetectionError(err)
 	}
 	if variableName == "version" {
 		// we were able to read something from "show variables" so assume mysql
