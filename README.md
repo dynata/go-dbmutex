@@ -14,7 +14,11 @@ among multiple processes.
 `go get github.com/dynata/go-dbmutex`
 
 ### Documentation
-After cloning run `godoc` and open a browser to http://localhost:6060
+
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/dynata/go-dbmutex)](https://pkg.go.dev/github.com/dynata/go-dbmutex)
+
+Full `godoc` style documentation for the package can be viewed online without installing this package by
+using the [GoDoc site](https://pkg.go.dev/github.com/dynata/go-dbmutex).
 
 ### Disclaimer
 
