@@ -123,9 +123,6 @@ func WithFailFast(b bool) MutexOption {
 // DefaultPollInterval is used.  Be careful when using a small poll interval because you can potentially cause
 // increased load on the database server. Duration must be > 0 or else it will be set to DefaultPollInterval.
 func WithPollInterval(d time.Duration) MutexOption {
-	if d <= 0 {
-		d = DefaultPollInterval
-	}
 	return func(o *mutexOptions) {
 		o.pollInterval = d
 	}

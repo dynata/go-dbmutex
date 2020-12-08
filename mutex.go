@@ -303,10 +303,10 @@ func New(
 	if mo.mutexName == "" {
 		mo.mutexName = DefaultMutexName
 	}
-	if mo.refresh < 0 {
+	if mo.refresh <= 0 {
 		mo.refresh = DefaultRefresh
 	}
-	if mo.expiration < 0 {
+	if mo.expiration <= 0 {
 		mo.expiration = DefaultExpiration
 	}
 	if mo.lockErrNotifier == nil {
@@ -317,6 +317,9 @@ func New(
 	}
 	if mo.refreshErrNotifier == nil {
 		mo.refreshErrNotifier = IgnoreLogError
+	}
+	if mo.pollInterval <= 0 {
+		mo.pollInterval = DefaultPollInterval
 	}
 
 	var err error
