@@ -209,3 +209,18 @@ func plusExtraMsg(msg string) string {
 	}
 	return ""
 }
+
+// MaxWaitersExceededError is returned when there are too many *local* routines waiting to acquire
+// a lock.
+type MaxWaitersExceededError struct {
+	msgErr
+}
+
+// Allocate a MaxWaitersExceededError.
+func NewMaxWaitersExceededError(maxWaiters int, mutexName string) MaxWaitersExceededError {
+	return MaxWaitersExceededError{
+		msgErr(
+			fmt.Sprintf("max waiters exceeded - more than %d waiters for mutex name '%s'",
+				maxWaiters, mutexName)),
+	}
+}
