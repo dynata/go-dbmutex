@@ -596,14 +596,6 @@ func testUnlockBeforeLock(t *testing.T, db *sql.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// _, err = m.Lock(ctx)
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	// err = m.Unlock(ctx)
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
 	err = m.Unlock(ctx)
 	var lockNotHeld dbmerr.NotLockedError
 	if !errors.As(err, &lockNotHeld) {
