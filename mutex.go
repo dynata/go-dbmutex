@@ -117,11 +117,7 @@ func (m *Mutex) Lock(ctx context.Context) (context.Context, error) {
 	// pollChan will be used to repeatedly try to acquire the lock. It is only initialized after we have failed
 	// once to acquire the lock. Select immediately returns for closed channels so we use a closed channel during
 	// the first loop iteration.
-	pollChan := func() <-chan time.Time {
-		c := make(chan time.Time)
-		close(c)
-		return c
-	}()
+	pollChan := getClosedTimeChan()
 	var ticker *time.Ticker
 Loop:
 	for {
@@ -216,11 +212,7 @@ func (m *Mutex) Unlock(ctx context.Context) error {
 	// pollChan will be used to repeatedly try to release the lock. It is only initialized after we have failed
 	// once to release the lock. Select immediately returns for closed channels so we use a closed channel during
 	// the first loop iteration.
-	pollChan := func() <-chan time.Time {
-		c := make(chan time.Time)
-		close(c)
-		return c
-	}()
+	pollChan := getClosedTimeChan()
 	var ticker *time.Ticker
 Loop:
 	for {
@@ -447,4 +439,17 @@ func goRefreshLock(
 		}
 	}()
 	return doneRefreshing
+}
+
+var (
+	closedTimeChan     chan time.Time
+	closedTimeChanOnce sync.Once
+)
+
+func getClosedTimeChan() <-chan time.Time {
+	closedTimeChanOnce.Do(func() {
+		closedTimeChan = make(chan time.Time)
+		close(closedTimeChan)
+	})
+	return closedTimeChan
 }
