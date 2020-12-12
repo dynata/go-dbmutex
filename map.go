@@ -25,6 +25,7 @@ type MutexMapOption func(options *mutexMapOptions)
 
 // WithMaxLocalWaiters sets the maximum number of local waiters. "Local" emphasises that the waiters
 // are local to this MutexMap. Waiters are not counted across different MutexMaps and/or processes.
+// Pass -1 (which is the default) to indicate that an unlimited number of local waiters are allowed.
 func WithMaxLocalWaiters(max int32) MutexMapOption {
 	return func(o *mutexMapOptions) {
 		o.maxLocalWaiters = max
@@ -66,31 +67,35 @@ type countedMutex struct {
 	references  int32
 }
 
-func (cm *countedMutex) incrementWaiters() {
-	atomic.AddInt32(&cm.waiters, 1)
-}
-
-func (cm *countedMutex) decrementWaiters() {
-	atomic.AddInt32(&cm.waiters, -1)
-}
-
-func (cm *countedMutex) numWaiters() int32 {
-	return atomic.LoadInt32(&cm.waiters)
-}
-
 // lock locks the underlying Mutex after first acquiring the private lock.
 func (cm *countedMutex) lock(
 	ctx context.Context,
 	db *sql.DB,
 	allocator mutexAllocator,
+	maxWaiters int32,
+	name string,
 ) (context.Context, error) {
+	// First, try non-blocking lock. We only become a waiter if we can't acquire lock in non-blocking fashion.
 	select {
 	case cm.timeoutLock <- struct{}{}:
 		// Lock acquired. Will unlock when unlock is called.
-	case <-ctx.Done():
-		// timeout
-		return nil, ctx.Err()
+	default:
+		// Unable to acquire local lock without waiting. We are now a waiter.
+		// Check limits before waiting in a blocking fashion.
+		currentWaiters := atomic.AddInt32(&cm.waiters, 1)
+		defer atomic.AddInt32(&cm.waiters, -1)
+		if maxWaiters >= 0 && currentWaiters > maxWaiters {
+			return nil, dbmerr.NewMaxWaitersExceededError(int(maxWaiters), name)
+		}
+		select {
+		case cm.timeoutLock <- struct{}{}:
+			// Lock acquired. Will unlock when unlock is called.
+		case <-ctx.Done():
+			// timeout
+			return nil, ctx.Err()
+		}
 	}
+
 	if cm.mutex == nil {
 		m, err := allocator(ctx, db)
 		if err != nil {
@@ -120,12 +125,14 @@ func (cm *countedMutex) unlock(ctx context.Context) error {
 // NewMutexMap allocates a new MutexMap. The passed db will be used for all database operations. options can be
 // used to customize behaviour.
 func NewMutexMap(db *sql.DB, options ...MutexMapOption) *MutexMap {
-	mmo := &mutexMapOptions{}
+	mmo := &mutexMapOptions{
+		maxLocalWaiters: -1,
+	}
 	for _, o := range options {
 		o(mmo)
 	}
-	if mmo.maxLocalWaiters < 0 {
-		mmo.maxLocalWaiters = 0
+	if mmo.maxLocalWaiters < -1 {
+		mmo.maxLocalWaiters = -1
 	}
 	if mmo.allocator == nil {
 		mmo.allocator = dbMutexAllocator
@@ -141,27 +148,25 @@ func NewMutexMap(db *sql.DB, options ...MutexMapOption) *MutexMap {
 // Mutex will be allocated and kept for later use. In order to lock with a timeout pass ctx that
 // has a deadline.  The returned context can be used to detect if the lock is lost.
 func (mm *MutexMap) Lock(ctx context.Context, name string) (context.Context, error) {
-	cm := mm.acquireReference(name, true, true)
-	defer cm.decrementWaiters()
-	if mm.options.maxLocalWaiters > 0 && cm.numWaiters() > mm.options.maxLocalWaiters {
-		mm.releaseReference(name)
-		return nil, dbmerr.NewMaxWaitersExceededError(int(mm.options.maxLocalWaiters), name)
-	}
-	lockExpirationCtx, err := cm.lock(ctx, mm.db, mm.options.allocator)
+	cm, err := mm.acquireReference(name, true)
 	if err != nil {
+		return nil, err
+	}
+	lockExpirationCtx, err2 := cm.lock(ctx, mm.db, mm.options.allocator, mm.options.maxLocalWaiters, name)
+	if err2 != nil {
 		// remove lock if it's not used any longer because we had an error
 		mm.releaseReference(name)
 	}
-	return lockExpirationCtx, err
+	return lockExpirationCtx, err2
 }
 
 // Unlock unlocks the named Mutex. Once no more references (including waiting lockers) are held for
 // the given name, the underlying Mutex is removed from an internal map.  So, it is likely that
 // new Mutex objects are frequently allocated and released.
 func (mm *MutexMap) Unlock(ctx context.Context, name string) error {
-	cm := mm.acquireReference(name, false, false)
-	if cm == nil {
-		return dbmerr.NewNotLockedError("n/a", name)
+	cm, err := mm.acquireReference(name, false)
+	if err != nil {
+		return err
 	}
 	// release reference we just acquired
 	defer mm.releaseReference(name)
@@ -173,13 +178,13 @@ func (mm *MutexMap) Unlock(ctx context.Context, name string) error {
 }
 
 // acquireReference locks the map and obtains a reference to the countedMutex.
-func (mm *MutexMap) acquireReference(name string, incrementWaiters bool, allocateMissing bool) *countedMutex {
+func (mm *MutexMap) acquireReference(name string, locking bool) (*countedMutex, error) {
 	mm.lock.Lock()
 	defer mm.lock.Unlock()
 	cm, exists := mm.countedMutexes[name]
 	if !exists {
-		if !allocateMissing {
-			return nil
+		if !locking {
+			return nil, dbmerr.NewNotLockedError("n/a", name)
 		}
 		cm = &countedMutex{
 			timeoutLock: make(chan struct{}, 1),
@@ -187,11 +192,7 @@ func (mm *MutexMap) acquireReference(name string, incrementWaiters bool, allocat
 		mm.countedMutexes[name] = cm
 	}
 	cm.references++
-
-	if incrementWaiters {
-		cm.incrementWaiters()
-	}
-	return cm
+	return cm, nil
 }
 
 // releaseReference locks the map, acquires the named countedMutex and removes it from the map

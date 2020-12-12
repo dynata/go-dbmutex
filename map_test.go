@@ -192,51 +192,54 @@ func TestMutexMap_MapStaysSmallWithConcurrency(t *testing.T) {
 }
 
 func TestMutexMap_MaxLocalWaiters(t *testing.T) {
-	ma := &testMutexAllocator{}
+	minWaiters := 0
 	maxWaiters := 10
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator), WithMaxLocalWaiters(int32(maxWaiters)))
-	maxI := 100
-	wg := sync.WaitGroup{}
-	lockName := "testLock"
-	acquiredLock := 0
-	maxWaitersErrs := int32(0)
-	for i := 0; i < maxI; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, err := mm.Lock(context.Background(), lockName)
-			if err != nil {
-				var maxWaitersErr dbmerr.MaxWaitersExceededError
-				if !errors.As(err, &maxWaitersErr) {
+	for waiters := minWaiters; waiters <= maxWaiters; waiters++ {
+		ma := &testMutexAllocator{}
+		mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator), WithMaxLocalWaiters(int32(waiters)))
+		maxI := 100
+		wg := sync.WaitGroup{}
+		lockName := "testLock"
+		acquiredLock := 0
+		maxWaitersErrs := int32(0)
+		for i := 0; i < maxI; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, err := mm.Lock(context.Background(), lockName)
+				if err != nil {
+					var maxWaitersErr dbmerr.MaxWaitersExceededError
+					if !errors.As(err, &maxWaitersErr) {
+						t.Error(err)
+						return
+					}
+					// unable to acquire lock because of max waiters
+					atomic.AddInt32(&maxWaitersErrs, 1)
+					return
+				}
+				acquiredLock++
+				time.Sleep(10 * time.Millisecond)
+				err = mm.Unlock(context.Background(), lockName)
+				if err != nil {
 					t.Error(err)
 					return
 				}
-				// unable to acquire lock because of max waiters
-				atomic.AddInt32(&maxWaitersErrs, 1)
-				return
-			}
-			acquiredLock++
-			time.Sleep(10 * time.Millisecond)
-			err = mm.Unlock(context.Background(), lockName)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-		}(i)
-	}
-	wg.Wait()
+			}(i)
+		}
+		wg.Wait()
 
-	if acquiredLock != maxWaiters+1 {
-		t.Errorf("expected to acquire lock %d times but was %d", maxWaiters+1, acquiredLock)
-	}
-	if acquiredLock+int(maxWaitersErrs) != maxI {
-		t.Errorf("expected acquire lock count + max waiters failures to be maxI(%d) but was %d", maxI, acquiredLock+maxWaiters)
-	}
-	if int(ma.called) != 1 {
-		t.Errorf("expected 1 alloation but was %d", ma.called)
-	}
-	if mm.len() != 0 {
-		t.Errorf("expected map len to be 0 but was %d", mm.len())
+		if acquiredLock != waiters+1 {
+			t.Errorf("expected to acquire lock %d times but was %d", waiters+1, acquiredLock)
+		}
+		if acquiredLock+int(maxWaitersErrs) != maxI {
+			t.Errorf("expected acquire lock count + max waiters failures to be maxI(%d) but was %d", maxI, acquiredLock+waiters)
+		}
+		if int(ma.called) != 1 {
+			t.Errorf("expected 1 alloation but was %d", ma.called)
+		}
+		if mm.len() != 0 {
+			t.Errorf("expected map len to be 0 but was %d", mm.len())
+		}
 	}
 }
 
