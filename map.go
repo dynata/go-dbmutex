@@ -163,7 +163,7 @@ func (mm *MutexMap) Lock(ctx context.Context, name string) (context.Context, err
 	lockExpirationCtx, err2 := cm.lock(
 		ctx,
 		func() (mutexOperations, error) {
-			return mm.options.allocator(ctx, mm.db, mm.options.mutexOptions...)
+			return mm.options.allocator(ctx, mm.db, append(mm.options.mutexOptions, WithMutexName(name))...)
 		},
 		mm.options.maxLocalWaiters,
 		name,
