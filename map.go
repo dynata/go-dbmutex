@@ -17,6 +17,7 @@ type mutexOperations interface {
 
 type mutexMapOptions struct {
 	maxLocalWaiters int32
+	mutexOptions    []MutexOption
 	allocator       mutexAllocator
 }
 
@@ -29,6 +30,14 @@ type MutexMapOption func(options *mutexMapOptions)
 func WithMaxLocalWaiters(max int32) MutexMapOption {
 	return func(o *mutexMapOptions) {
 		o.maxLocalWaiters = max
+	}
+}
+
+// WithMutexOptions can be used to customize the Mutex objects that are used for locking. The options
+// are passed to New when creating Mutex objects.
+func WithMutexOptions(options ...MutexOption) MutexMapOption {
+	return func(o *mutexMapOptions) {
+		o.mutexOptions = options
 	}
 }
 
@@ -70,8 +79,7 @@ type countedMutex struct {
 // lock locks the underlying Mutex after first acquiring the private lock.
 func (cm *countedMutex) lock(
 	ctx context.Context,
-	db *sql.DB,
-	allocator mutexAllocator,
+	allocator func() (mutexOperations, error),
 	maxWaiters int32,
 	name string,
 ) (context.Context, error) {
@@ -97,7 +105,7 @@ func (cm *countedMutex) lock(
 	}
 
 	if cm.mutex == nil {
-		m, err := allocator(ctx, db)
+		m, err := allocator()
 		if err != nil {
 			// unlock our local lock
 			<-cm.timeoutLock
@@ -152,7 +160,14 @@ func (mm *MutexMap) Lock(ctx context.Context, name string) (context.Context, err
 	if err != nil {
 		return nil, err
 	}
-	lockExpirationCtx, err2 := cm.lock(ctx, mm.db, mm.options.allocator, mm.options.maxLocalWaiters, name)
+	lockExpirationCtx, err2 := cm.lock(
+		ctx,
+		func() (mutexOperations, error) {
+			return mm.options.allocator(ctx, mm.db, mm.options.mutexOptions...)
+		},
+		mm.options.maxLocalWaiters,
+		name,
+	)
 	if err2 != nil {
 		// remove lock if it's not used any longer because we had an error
 		mm.releaseReference(name)
