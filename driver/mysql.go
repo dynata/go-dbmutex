@@ -21,6 +21,8 @@ func (MysqlDriver) CreateMutexTableIfNotExists(
 	q := fmt.Sprintf(`create table if not exists %s (
 name varchar(%d) not null primary key,
 locked boolean not null default false,
+locked_count bigint not null default 0,
+locked_seconds double not null default 0,
 locker_host varchar(%d) null,
 locker_pid bigint null,
 locker_id varchar(%d) null,
@@ -94,6 +96,7 @@ func (MysqlDriver) Lock(
 	current_timestamp(6)
 ) on duplicate key update
 	locked = if(not locked or expires_at < current_timestamp(6), true, null),
+	locked_count = locked_count + 1,
 	locker_host = values(locker_host),
 	locker_pid = values(locker_pid),
 	locker_id = values(locker_id),
@@ -162,16 +165,23 @@ func (MysqlDriver) Unlock(
 	pid int,
 	lockerId string,
 ) (bool, error) {
-	return unlock(
-		ctx,
-		ex,
-		tableName,
-		mutexName,
-		hostname,
-		pid,
-		lockerId,
-		mysqlPlaceholder,
-	)
+	q := fmt.Sprintf(`update %s
+set
+	locked = false,
+	released_at = current_timestamp(6),
+	updated_at = current_timestamp(6),
+	locked_seconds = locked_seconds + (timestampdiff(microsecond, coalesce(locked_at, current_timestamp(6)), current_timestamp(6)) / 1000000)
+where
+	(name, locked, locker_host, locker_pid, locker_id) = (?, true, ?, ?, ?)`, tableName)
+	result, err := ex.ExecContext(ctx, q, mutexName, hostname, pid, lockerId)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected == 1, nil
 }
 
 func mysqlPlaceholder(int) string {

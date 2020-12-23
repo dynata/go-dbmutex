@@ -648,6 +648,7 @@ func testManyDifferentLockNames(t *testing.T, db *sql.DB, iterations, maxName in
 	const maxDuration = time.Second * 30
 	ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
 	defer cancelFunc()
+	rand.Seed(time.Now().Unix())
 	for i := 0; i < iterations; i++ {
 		lockName := fmt.Sprintf("%s_%d", testLockName, rand.Intn(maxName))
 		options := []dbmutex.MutexOption{

@@ -22,15 +22,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/dynata/go-dbmutex/dbmerr"
 	"github.com/dynata/go-dbmutex/driver"
+	"github.com/google/uuid"
 )
 
 const (
@@ -380,15 +379,8 @@ func New(
 		lock:     &sync.Mutex{},
 		hostname: hostname,
 		pid:      pid,
-		lockerId: uuid(),
+		lockerId: uuid.New().String(),
 	}, nil
-}
-
-func uuid() string {
-	b := make([]byte, 16)
-	// rand.Read does not return non-nil error.
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%X-%X-%X-%X-%X", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // goRefreshLock keeps the database row corresponding to the passed parameters up-to-date by periodically
