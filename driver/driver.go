@@ -194,33 +194,3 @@ func createMutexEntryIfNotExists(
 	}
 	return nil
 }
-
-func unlock(
-	ctx context.Context,
-	ex Execer,
-	tableName string,
-	mutexName string,
-	hostname string,
-	pid int,
-	lockerId string,
-	placeholder func(i int) string,
-) (bool, error) {
-	q := fmt.Sprintf(`update %s
-set
-	locked = false,
-	released_at = current_timestamp(6),
-	updated_at = current_timestamp(6)
-where
-	(name, locked, locker_host, locker_pid, locker_id) = (%s, true, %s, %s, %s)
-`, tableName, placeholder(1), placeholder(2), placeholder(3), placeholder(4))
-	result, err := ex.ExecContext(ctx, q, mutexName, hostname, pid, lockerId)
-	if err != nil {
-		return false, err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rowsAffected == 1, nil
-
-}

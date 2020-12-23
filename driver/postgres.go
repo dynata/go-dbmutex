@@ -24,6 +24,8 @@ func (PostgresDriver) CreateMutexTableIfNotExists(
 	q := fmt.Sprintf(`create table if not exists %s (
 name varchar(%d) not null primary key,
 locked boolean not null default false,
+locked_count bigint not null default 0,
+locked_seconds double precision not null default 0,
 locker_host varchar(%d) null,
 locker_pid bigint null,
 locker_id varchar(%d) null,
@@ -101,6 +103,7 @@ values(
 )
 on conflict(name) do update set
 	locked = excluded.locked,
+	locked_count = lock_t.locked_count + 1,
 	locker_host = excluded.locker_host,
 	locker_pid = excluded.locker_pid,
 	locker_id = excluded.locker_id,
@@ -160,14 +163,21 @@ func (PostgresDriver) Unlock(
 	pid int,
 	lockerId string,
 ) (bool, error) {
-	return unlock(
-		ctx,
-		ex,
-		tableName,
-		mutexName,
-		hostname,
-		pid,
-		lockerId,
-		postgresPlaceholder,
-	)
+	q := fmt.Sprintf(`update %s
+set
+	locked = false,
+	released_at = now(),
+	updated_at = now(),
+	locked_seconds = locked_seconds + extract(epoch from (now() - coalesce(locked_at,now())))
+where
+	(name, locked, locker_host, locker_pid, locker_id) = ($1, true, $2, $3, $4)`, tableName)
+	result, err := ex.ExecContext(ctx, q, mutexName, hostname, pid, lockerId)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected == 1, nil
 }
