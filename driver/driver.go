@@ -137,7 +137,7 @@ func verifyMutexExists(
 	mutextName string,
 	placeholder func(int) string,
 ) (found bool, retErr error) {
-	query := "select lock_id from (select lock_id, name, locked, locker_host, locker_pid, locker_id, " +
+	query := "select name from (select name, locked, locker_host, locker_pid, locker_id, " +
 		"locked_at, released_at, refresh_at, expires_at, created_at, updated_at " +
 		"from " + tableName + " where name = " + placeholder(1) + " limit 1) x"
 	rows, err := queryer.QueryContext(ctx, query, mutextName)
@@ -149,8 +149,8 @@ func verifyMutexExists(
 	if !rows.Next() {
 		return false, nil
 	}
-	var lockId int64
-	err = rows.Scan(&lockId)
+	var name string
+	err = rows.Scan(&name)
 	if err != nil {
 		return false, dbmerr.NewMissingMutexTableError(tableName, err)
 	}
@@ -208,13 +208,8 @@ func unlock(
 	q := fmt.Sprintf(`update %s
 set
 	locked = false,
-	locker_host = null,
-	locker_pid = null,
-	locker_id = null,
-	refresh_at = null,
-	expires_at = now(),
-	released_at = now(),
-	updated_at = now()
+	released_at = current_timestamp(6),
+	updated_at = current_timestamp(6)
 where
 	(name, locked, locker_host, locker_pid, locker_id) = (%s, true, %s, %s, %s)
 `, tableName, placeholder(1), placeholder(2), placeholder(3), placeholder(4))

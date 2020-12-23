@@ -18,6 +18,7 @@ type mutexOptions struct {
 	refreshErrNotifier ErrorNotifier
 	failFast           bool
 	pollInterval       time.Duration
+	delayAddMutexRow   bool
 }
 
 // MutexOption is used to customize Mutex behaviour.
@@ -31,6 +32,14 @@ func WithErrorNotifier(f ErrorNotifier) MutexOption {
 		o.lockErrNotifier = f
 		o.unlockErrNotifier = f
 		o.refreshErrNotifier = f
+	}
+}
+
+// WithDelayAddMutexRow can be used to change the default (false) case for delaying the insertion of a row
+// into the mutex table.
+func WithDelayAddMutexRow(delay bool) MutexOption {
+	return func(o *mutexOptions) {
+		o.delayAddMutexRow = delay
 	}
 }
 

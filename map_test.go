@@ -66,8 +66,16 @@ func (t *testMutexAllocator) mutexAllocator(context.Context, *sql.DB, ...MutexOp
 
 func TestMutexMap_SimpleLockUnlock(t *testing.T) {
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
-	_, err := mm.Lock(context.Background(), "X")
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mm.Lock(context.Background(), "X")
 	if err != nil {
 		t.Error(err)
 		return
@@ -88,7 +96,15 @@ func TestMutexMap_SimpleLockUnlock(t *testing.T) {
 func TestMutexMap_Concurrent(t *testing.T) {
 	concurrency := 10000
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	acc := int32(0)
 	wg := sync.WaitGroup{}
@@ -120,7 +136,15 @@ func TestMutexMap_Concurrent(t *testing.T) {
 
 func TestMutexMap_MapStaysSmall(t *testing.T) {
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	maxI := 100
 	maxJ := 100
 	for i := 0; i < maxI; i++ {
@@ -149,7 +173,15 @@ func TestMutexMap_MapStaysSmall(t *testing.T) {
 
 func TestMutexMap_MapStaysSmallWithConcurrency(t *testing.T) {
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	maxI := 100
 	maxJ := 100
 	wg := sync.WaitGroup{}
@@ -196,7 +228,16 @@ func TestMutexMap_MaxLocalWaiters(t *testing.T) {
 	maxWaiters := 10
 	for waiters := minWaiters; waiters <= maxWaiters; waiters++ {
 		ma := &testMutexAllocator{}
-		mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator), WithMaxLocalWaiters(int32(waiters)))
+		options := []MutexMapOption{
+			withMutexAllocator(ma.mutexAllocator),
+			WithMaxLocalWaiters(int32(waiters)),
+			WithDelayResolveDriver(true),
+			WithDelayCreateMissingTable(true),
+		}
+		mm, err := NewMutexMap(context.Background(), nil, options...)
+		if err != nil {
+			t.Fatal(err)
+		}
 		maxI := 100
 		wg := sync.WaitGroup{}
 		lockName := "testLock"
@@ -245,7 +286,15 @@ func TestMutexMap_MaxLocalWaiters(t *testing.T) {
 
 func TestMutexMap_LockTimeout(t *testing.T) {
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lockName := "testLock"
 	lockIsHeld := sync.WaitGroup{}
 	lockIsHeld.Add(1)
@@ -286,7 +335,7 @@ func TestMutexMap_LockTimeout(t *testing.T) {
 	bothDone.Wait()
 
 	// now should be able to acquire after a waiting lock timeout
-	_, err := mm.Lock(context.Background(), lockName)
+	_, err = mm.Lock(context.Background(), lockName)
 	if err != nil {
 		t.Error(err)
 		return
@@ -302,7 +351,15 @@ func TestMutexMap_AllocationFailure(t *testing.T) {
 	ma := &testMutexAllocator{
 		failOnAllocationCallNum: 1,
 	}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lockName := "testLock"
 	lockCtx, err := mm.Lock(context.Background(), lockName)
 	if err != errFailedAllocation {
@@ -328,7 +385,15 @@ func TestMutexMap_LockFailure(t *testing.T) {
 	ma := &testMutexAllocator{
 		failOnLockCallNum: 2,
 	}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lockName := "testLock"
 
 	lockIsHeld := sync.WaitGroup{}
@@ -387,7 +452,15 @@ func TestMutexMap_UnlockFailure(t *testing.T) {
 	ma := &testMutexAllocator{
 		failOnUnlockCallNum: 2,
 	}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lockName := "testLock"
 
 	lockIsHeld := sync.WaitGroup{}
@@ -448,9 +521,17 @@ func TestMutexMap_UnlockFailure(t *testing.T) {
 
 func TestMutexMap_UnlockNotLocked(t *testing.T) {
 	ma := &testMutexAllocator{}
-	mm := NewMutexMap(nil, withMutexAllocator(ma.mutexAllocator))
+	options := []MutexMapOption{
+		withMutexAllocator(ma.mutexAllocator),
+		WithDelayResolveDriver(true),
+		WithDelayCreateMissingTable(true),
+	}
+	mm, err := NewMutexMap(context.Background(), nil, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lockName := "testLock"
-	err := mm.Unlock(context.Background(), lockName)
+	err = mm.Unlock(context.Background(), lockName)
 	var e dbmerr.NotLockedError
 	if !errors.As(err, &e) {
 		t.Errorf("expected error to be not locked but was %v", err)

@@ -269,13 +269,7 @@ func (m *Mutex) Identity() Identity {
 	}
 }
 
-// New creates a new Mutex. The passed db is used for all database interactions. Behaviour can be customized
-// by passing options.  The option that should almost always be passed is the lock name (See WithMutexName.)
-func New(
-	ctx context.Context,
-	db *sql.DB,
-	options ...MutexOption,
-) (*Mutex, error) {
+func initMutexOptions(options ...MutexOption) *mutexOptions {
 	mo := &mutexOptions{
 		tableName:          DefaultMutexTableName,
 		mutexName:          DefaultMutexName,
@@ -313,7 +307,37 @@ func New(
 	if mo.pollInterval <= 0 {
 		mo.pollInterval = DefaultPollInterval
 	}
+	return mo
+}
 
+func createMutexTableIfNotExists(
+	ctx context.Context,
+	db *sql.DB,
+	driver driver.Driver,
+	tableName string,
+) error {
+	err := driver.CreateMutexTableIfNotExists(ctx, db, tableName)
+	if err != nil {
+		// It is possible that create table if not exists operation will fail with a message like
+		// pq: duplicate key value violates unique constraint "pg_type_typname_nsp_index".  This race condition
+		// should only occur if multiple callers attempt to create the same table at the same time. A simple
+		// retry should eliminate the error.
+		err2 := driver.CreateMutexTableIfNotExists(ctx, db, tableName)
+		if err2 != nil {
+			return err
+		}
+	}
+	return err
+}
+
+// New creates a new Mutex. The passed db is used for all database interactions. Behaviour can be customized
+// by passing options.  The option that should almost always be passed is the lock name (See WithMutexName.)
+func New(
+	ctx context.Context,
+	db *sql.DB,
+	options ...MutexOption,
+) (*Mutex, error) {
+	mo := initMutexOptions(options...)
 	var err error
 	if mo.driver == nil {
 		mo.driver, err = driver.ResolveDriver(ctx, db)
@@ -323,26 +347,21 @@ func New(
 	}
 
 	if mo.createMissingTable {
-		err = mo.driver.CreateMutexTableIfNotExists(ctx, db, mo.tableName)
+		err = createMutexTableIfNotExists(ctx, db, mo.driver, mo.tableName)
 		if err != nil {
-			// It is possible that create table if not exists operation will fail with a message like
-			// pq: duplicate key value violates unique constraint "pg_type_typname_nsp_index".  This race condition
-			// should only occur if multiple callers attempt to create the same table at the same time. A simple
-			// retry should eliminate the error.
-			err2 := mo.driver.CreateMutexTableIfNotExists(ctx, db, mo.tableName)
-			if err2 != nil {
-				return nil, err
-			}
+			return nil, err
 		}
 	}
 
-	err = mo.driver.CreateMutexEntryIfNotExists(ctx, db, mo.tableName, mo.mutexName)
-	if err != nil {
-		// mysql can fail on concurrent inserts :( so try one more time.
-		// Error 1213: Deadlock found when trying to get lock; try restarting transaction
-		err2 := mo.driver.CreateMutexEntryIfNotExists(ctx, db, mo.tableName, mo.mutexName)
-		if err2 != nil {
-			return nil, err
+	if !mo.delayAddMutexRow {
+		err = mo.driver.CreateMutexEntryIfNotExists(ctx, db, mo.tableName, mo.mutexName)
+		if err != nil {
+			// mysql can fail on concurrent inserts :( so try one more time.
+			// Error 1213: Deadlock found when trying to get lock; try restarting transaction
+			err2 := mo.driver.CreateMutexEntryIfNotExists(ctx, db, mo.tableName, mo.mutexName)
+			if err2 != nil {
+				return nil, err
+			}
 		}
 	}
 

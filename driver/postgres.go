@@ -22,8 +22,7 @@ func (PostgresDriver) CreateMutexTableIfNotExists(
 	tableName string,
 ) error {
 	q := fmt.Sprintf(`create table if not exists %s (
-lock_id bigserial not null primary key,
-name varchar(%d) not null,
+name varchar(%d) not null primary key,
 locked boolean not null default false,
 locker_host varchar(%d) null,
 locker_pid bigint null,
@@ -33,9 +32,8 @@ refresh_at timestamp with time zone null,
 expires_at timestamp with time zone not null default current_timestamp,
 released_at timestamp with time zone null,
 created_at timestamp with time zone not null default current_timestamp,
-updated_at timestamp with time zone not null default current_timestamp,
-constraint %s_idx_name unique(name)
-)`, tableName, MaxMutexNameLength, MaxHostnameLength, MaxLockerIdLength, tableName)
+updated_at timestamp with time zone not null default current_timestamp
+)`, tableName, MaxMutexNameLength, MaxHostnameLength, MaxLockerIdLength)
 	_, err := ex.ExecContext(ctx, q)
 	if err != nil {
 		return dbmerr.NewCreateMutexTableError(tableName, err)
@@ -76,22 +74,43 @@ func (PostgresDriver) Lock(
 	refresh time.Duration,
 	expires time.Duration,
 ) (bool, error) {
-	q := fmt.Sprintf(`update %s lock_t
-set
-	locked = true,
-	locker_host = $1,
-	locker_pid = $2,
-	locker_id = $3,
-	locked_at = now(),
-	refresh_at = now() + ($4 * interval '1 microsecond'),
-	expires_at = now() + ($5 * interval '1 microsecond'),
-	released_at = null,
-	updated_at = now()
-where
-	name = $6
-	and (not locked or expires_at < now())
-`, tableName)
-	result, err := ex.ExecContext(ctx, q, hostname, pid, lockerId, refresh.Microseconds(), expires.Microseconds(), mutexName)
+	q := fmt.Sprintf(`insert into
+%s as lock_t (
+	name,
+	locked,
+	locker_host,
+	locker_pid,
+	locker_id,
+	locked_at,
+	refresh_at,
+	expires_at,
+	released_at,
+	updated_at
+)
+values(
+	$1,
+	true,
+	$2,
+	$3,
+	$4,
+	now(),
+	now() + ($5 * interval '1 microsecond'),
+	now() + ($6 * interval '1 microsecond'),
+	null,
+	now()
+)
+on conflict(name) do update set
+	locked = excluded.locked,
+	locker_host = excluded.locker_host,
+	locker_pid = excluded.locker_pid,
+	locker_id = excluded.locker_id,
+	locked_at = excluded.locked_at,
+	refresh_at = excluded.refresh_at,
+	expires_at = excluded.expires_at,
+	released_at = excluded.released_at,
+	updated_at = excluded.updated_at
+where (not lock_t.locked or lock_t.expires_at < now())`, tableName)
+	result, err := ex.ExecContext(ctx, q, mutexName, hostname, pid, lockerId, refresh.Microseconds(), expires.Microseconds())
 	if err != nil {
 		return false, err
 	}
