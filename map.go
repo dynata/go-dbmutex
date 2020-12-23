@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/dynata/go-dbmutex/dbmerr"
+	"github.com/dynata/go-dbmutex/driver"
 )
 
 // This interface is mainly used to simply testing.
@@ -16,9 +17,11 @@ type mutexOperations interface {
 }
 
 type mutexMapOptions struct {
-	maxLocalWaiters int32
-	mutexOptions    []MutexOption
-	allocator       mutexAllocator
+	maxLocalWaiters         int32
+	mutexOptions            []MutexOption
+	allocator               mutexAllocator
+	delayCreateMissingTable bool
+	delayResolveDriver      bool
 }
 
 // MutexMapOption is used to customize MutexMap behaviour.
@@ -38,6 +41,22 @@ func WithMaxLocalWaiters(max int32) MutexMapOption {
 func WithMutexOptions(options ...MutexOption) MutexMapOption {
 	return func(o *mutexMapOptions) {
 		o.mutexOptions = options
+	}
+}
+
+// WithDelayCreateMissingTable allows customization of table creation if it does not exist. Pass true in order to
+// override the default behaviour and delay the creation of a a missing mutex table.
+func WithDelayCreateMissingTable(b bool) MutexMapOption {
+	return func(o *mutexMapOptions) {
+		o.delayCreateMissingTable = b
+	}
+}
+
+// WithDelayResolveDriver allows customization of driver.Driver resolution. Pass true in order to
+// override the default behaviour and delay resolution of the driver.Driver.
+func WithDelayResolveDriver(b bool) MutexMapOption {
+	return func(o *mutexMapOptions) {
+		o.delayResolveDriver = b
 	}
 }
 
@@ -132,7 +151,7 @@ func (cm *countedMutex) unlock(ctx context.Context) error {
 
 // NewMutexMap allocates a new MutexMap. The passed db will be used for all database operations. options can be
 // used to customize behaviour.
-func NewMutexMap(db *sql.DB, options ...MutexMapOption) *MutexMap {
+func NewMutexMap(ctx context.Context, db *sql.DB, options ...MutexMapOption) (*MutexMap, error) {
 	mmo := &mutexMapOptions{
 		maxLocalWaiters: -1,
 	}
@@ -145,11 +164,34 @@ func NewMutexMap(db *sql.DB, options ...MutexMapOption) *MutexMap {
 	if mmo.allocator == nil {
 		mmo.allocator = dbMutexAllocator
 	}
+
+	mo := initMutexOptions(mmo.mutexOptions...)
+	drv := mo.driver
+	var err error
+	if drv == nil && (!mmo.delayResolveDriver || !mmo.delayCreateMissingTable) {
+		drv, err = driver.ResolveDriver(ctx, db)
+		if err != nil {
+			return nil, err
+		}
+		// Add the revolved driver to the list of mutex creation options so that we don't have to
+		// resolve it on creation of every Mutex.
+		mmo.mutexOptions = append(mmo.mutexOptions, WithDriver(drv))
+	}
+	if mo.createMissingTable && !mmo.delayCreateMissingTable {
+		err = createMutexTableIfNotExists(ctx, db, drv, mo.tableName)
+		if err != nil {
+			return nil, err
+		}
+		// Configure Mutex to not create table since we just created it.
+		mmo.mutexOptions = append(mmo.mutexOptions, WithCreateMissingTable(false))
+	}
+	mmo.mutexOptions = append(mmo.mutexOptions, WithDelayAddMutexRow(true))
+
 	return &MutexMap{
 		options:        mmo,
 		db:             db,
 		countedMutexes: make(map[string]*countedMutex),
-	}
+	}, nil
 }
 
 // Lock locks named Mutex. If not already available for the given name, an underlying

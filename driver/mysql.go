@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dynata/go-dbmutex/dbmerr"
@@ -18,20 +19,18 @@ func (MysqlDriver) CreateMutexTableIfNotExists(
 	tableName string,
 ) error {
 	q := fmt.Sprintf(`create table if not exists %s (
-lock_id bigint not null auto_increment primary key,
-name varchar(%d) not null,
+name varchar(%d) not null primary key,
 locked boolean not null default false,
 locker_host varchar(%d) null,
 locker_pid bigint null,
 locker_id varchar(%d) null,
-locked_at timestamp null,
-refresh_at timestamp null,
-expires_at timestamp not null default current_timestamp,
-released_at timestamp null,
-created_at timestamp not null default current_timestamp,
-updated_at timestamp not null default current_timestamp,
-constraint %s_idx_name unique(name)
-)`, tableName, MaxMutexNameLength, MaxHostnameLength, MaxLockerIdLength, tableName)
+locked_at timestamp(6) null,
+refresh_at timestamp(6) null,
+expires_at timestamp(6) not null default current_timestamp(6),
+released_at timestamp(6) null,
+created_at timestamp(6) not null default current_timestamp(6),
+updated_at timestamp(6) not null default current_timestamp(6)
+)`, tableName, MaxMutexNameLength, MaxHostnameLength, MaxLockerIdLength)
 	_, err := ex.ExecContext(ctx, q)
 	if err != nil {
 		return dbmerr.NewCreateMutexTableError(tableName, err)
@@ -70,30 +69,58 @@ func (MysqlDriver) Lock(
 	refresh time.Duration,
 	expires time.Duration,
 ) (bool, error) {
-	q := fmt.Sprintf(`update %s lock_t
-set
-	locked = true,
-	locker_host = ?,
-	locker_pid = ?,
-	locker_id = ?,
-	locked_at = now(),
-	refresh_at = timestampadd(microsecond, ?, now()),
-	expires_at = timestampadd(microsecond, ?, now()),
-	released_at = null,
-	updated_at = now()
-where
-	name = ?
-	and (not locked or expires_at < now())
-`, tableName)
-	result, err := ex.ExecContext(ctx, q, hostname, pid, lockerId, refresh.Microseconds(), expires.Microseconds(), mutexName)
+	q := fmt.Sprintf(`insert into
+%s(
+	name,
+	locked,
+	locker_host,
+	locker_pid,
+	locker_id,
+	locked_at,
+	refresh_at,
+	expires_at,
+	released_at,
+	updated_at
+) values (
+	?,
+	true,
+	?,
+	?,
+	?,
+	current_timestamp(6),
+	timestampadd(microsecond, ?, current_timestamp(6)),
+	timestampadd(microsecond , ?, current_timestamp(6)),
+	null,
+	current_timestamp(6)
+) on duplicate key update
+	locked = if(not locked or expires_at < current_timestamp(6), true, null),
+	locker_host = values(locker_host),
+	locker_pid = values(locker_pid),
+	locker_id = values(locker_id),
+	locked_at = values(locked_at),
+	refresh_at = values(refresh_at),
+	expires_at = values(expires_at),
+	released_at = values(released_at),
+	updated_at = values(updated_at)`, tableName)
+
+	var err error
+	var result sql.Result
+	result, err = ex.ExecContext(ctx, q, mutexName, hostname, pid, lockerId, refresh.Microseconds(), expires.Microseconds())
+	if err != nil {
+		// if we are unable to acquire the lock, err.Error() will be "Error 1048: Column 'locked' cannot be null"
+		if strings.Contains(err.Error(), "Error 1048:") {
+			return false, nil
+		}
+		return false, err
+	}
+	var rowsAffected int64
+	rowsAffected, err = result.RowsAffected()
 	if err != nil {
 		return false, err
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rowsAffected == 1, nil
+	// With ON DUPLICATE KEY UPDATE, the affected-rows value per row is 1 if the row is inserted
+	// as a new row and 2 if an existing row is updated.
+	return rowsAffected == 1 || rowsAffected == 2, nil
 }
 
 func (MysqlDriver) Refresh(
@@ -109,9 +136,9 @@ func (MysqlDriver) Refresh(
 ) (bool, error) {
 	q := fmt.Sprintf(`update %s
 set
-	refresh_at = timestampadd(microsecond, ?, now()),
-	expires_at = timestampadd(microsecond, ?, now()),
-	updated_at = now()
+	refresh_at = timestampadd(microsecond, ?, current_timestamp(6)),
+	expires_at = timestampadd(microsecond, ?, current_timestamp(6)),
+	updated_at = current_timestamp(6)
 where
 	(name, locked, locker_host, locker_pid, locker_id) = (?, true, ?, ?, ?)
 `, tableName)

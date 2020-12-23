@@ -5,14 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dynata/go-dbmutex"
 	"github.com/dynata/go-dbmutex/dbmerr"
+	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
+	"github.com/luna-duclos/instrumentedsql"
 	"github.com/ory/dockertest/v3"
 )
 
@@ -77,23 +82,26 @@ func startupPostgresContainer(t *testing.T, pool *dockertest.Pool, dockerRepo, d
 	return resource, db, nil
 }
 
-func runAllDbTests(t *testing.T, dbName string, db *sql.DB, pool *dockertest.Pool, res *dockertest.Resource) {
-	defer func() {
-		purgeErr := pool.Purge(res)
-		if purgeErr != nil {
-			t.Errorf("error during purge: %s", purgeErr)
-		}
-	}()
+func runAllDbTests(t *testing.T, dbName string, db *sql.DB, cleanup func()) {
+	if cleanup != nil {
+		defer cleanup()
+	}
 	defer func() { _ = db.Close() }()
 	t.Run(dbName, func(t *testing.T) {
 		t.Run("New", func(t *testing.T) {
 			testNew(t, db)
+		})
+		t.Run("ManyDifferentLockNames", func(t *testing.T) {
+			testManyDifferentLockNames(t, db, 1000, 1000000)
 		})
 		t.Run("HammerMutexSameObject", func(t *testing.T) {
 			testHammerMutex(t, db, 10, 30, true, testTableName, testLockName)
 		})
 		t.Run("HammerMutexDifferentObject", func(t *testing.T) {
 			testHammerMutex(t, db, 10, 30, false, testTableName, testLockName)
+		})
+		t.Run("HammerMutexMapSameObject", func(t *testing.T) {
+			testHammerMutexMap(t, db, 10, 30, true, testTableName, testLockName)
 		})
 		t.Run("DifferentLockTableNames", func(t *testing.T) {
 			testDifferentLockTableNames(t, db)
@@ -181,11 +189,17 @@ func TestDatabases(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		runAllDbTests(t, dbToTest.repo+":"+dbToTest.tag, db, pool, res)
+		cleanup := func() {
+			purgeErr := pool.Purge(res)
+			if purgeErr != nil {
+				t.Errorf("error during purge: %s", purgeErr)
+			}
+		}
+		runAllDbTests(t, dbToTest.repo+":"+dbToTest.tag, db, cleanup)
 	}
 }
 
-func lockAndUnlock(t *testing.T, parentCtx context.Context, m *dbmutex.Mutex) {
+func lockAndUnlock(t testing.TB, parentCtx context.Context, m *dbmutex.Mutex) {
 	ctx, cancelFunc := context.WithDeadline(parentCtx, time.Now().Add(time.Second*5))
 	defer cancelFunc()
 	_, err := m.Lock(ctx)
@@ -200,7 +214,7 @@ func lockAndUnlock(t *testing.T, parentCtx context.Context, m *dbmutex.Mutex) {
 	}
 }
 
-func hammerMutex(t *testing.T, ctx context.Context, m *dbmutex.Mutex, loops int, wg *sync.WaitGroup) {
+func hammerMutex(t testing.TB, ctx context.Context, m *dbmutex.Mutex, loops int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for i := 0; i < loops; i++ {
 		err := ctx.Err()
@@ -212,14 +226,12 @@ func hammerMutex(t *testing.T, ctx context.Context, m *dbmutex.Mutex, loops int,
 	}
 }
 
-func testHammerMutex(t *testing.T, db *sql.DB, hammers, loops int, sameObject bool, tableName, lockName string) {
+func testHammerMutex(tb testing.TB, db *sql.DB, hammers, loops int, sameObject bool, tableName, lockName string) {
 	options := []dbmutex.MutexOption{
 		dbmutex.WithMutexTableName(tableName),
 		dbmutex.WithMutexName(lockName),
 		dbmutex.WithPollInterval(time.Nanosecond),
 	}
-	// lockOps := []dbmutex.LockOption{
-	// }
 	const maxDuration = time.Second * 30
 	ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
 	defer cancelFunc()
@@ -228,7 +240,7 @@ func testHammerMutex(t *testing.T, db *sql.DB, hammers, loops int, sameObject bo
 	if sameObject {
 		m, err = dbmutex.New(ctx, db, options...)
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 	wg := sync.WaitGroup{}
@@ -236,17 +248,174 @@ func testHammerMutex(t *testing.T, db *sql.DB, hammers, loops int, sameObject bo
 		if !sameObject {
 			m, err = dbmutex.New(ctx, db, options...)
 			if err != nil {
-				t.Error(err)
+				tb.Error(err)
 				return
 			}
 		}
 		wg.Add(1)
-		go hammerMutex(t, ctx, m, loops, &wg)
+		go hammerMutex(tb, ctx, m, loops, &wg)
 	}
-	waitForTestCompletion(t, &wg, maxDuration)
+	waitForTestCompletion(tb, &wg, maxDuration)
 }
 
-func waitForTestCompletion(t *testing.T, wg *sync.WaitGroup, d time.Duration) {
+func lockAndUnlockMap(t testing.TB, parentCtx context.Context, mm *dbmutex.MutexMap, name string) {
+	ctx, cancelFunc := context.WithDeadline(parentCtx, time.Now().Add(time.Second*5))
+	defer cancelFunc()
+	_, err := mm.Lock(ctx, name)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = mm.Unlock(ctx, name)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+}
+
+func hammerMutexMap(t testing.TB, ctx context.Context, mm *dbmutex.MutexMap, name string, loops int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i := 0; i < loops; i++ {
+		err := ctx.Err()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		lockAndUnlockMap(t, ctx, mm, name)
+	}
+}
+
+func testHammerMutexMap(tb testing.TB, db *sql.DB, hammers, loops int, sameObject bool, tableName, lockName string) {
+	options := []dbmutex.MutexMapOption{
+		dbmutex.WithMutexOptions(
+			dbmutex.WithMutexTableName(tableName),
+			dbmutex.WithPollInterval(time.Nanosecond),
+		),
+	}
+	const maxDuration = time.Second * 30
+	ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
+	defer cancelFunc()
+	var mm *dbmutex.MutexMap
+	var err error
+	if sameObject {
+		mm, err = dbmutex.NewMutexMap(ctx, db, options...)
+		if err != nil {
+			tb.Fatal(err)
+		}
+	}
+	wg := sync.WaitGroup{}
+	for i := 0; i < hammers; i++ {
+		if !sameObject {
+			mm, err = dbmutex.NewMutexMap(ctx, db, options...)
+			if err != nil {
+				tb.Error(err)
+				return
+			}
+		}
+		wg.Add(1)
+		go hammerMutexMap(tb, ctx, mm, lockName, loops, &wg)
+	}
+	waitForTestCompletion(tb, &wg, maxDuration)
+}
+
+var instrumentOnce sync.Once
+
+func localTestDB() (*sql.DB, error) {
+	instrumentOnce.Do(
+		func() {
+			logger := instrumentedsql.LoggerFunc(func(ctx context.Context, msg string, keyvals ...interface{}) {
+				log.Printf("%s %v", msg, keyvals)
+			})
+			sql.Register("instrumented-mysql", instrumentedsql.WrapDriver(&mysql.MySQLDriver{}, instrumentedsql.WithLogger(logger)))
+			sql.Register("instrumented-postgres", instrumentedsql.WrapDriver(&pq.Driver{}, instrumentedsql.WithLogger(logger)))
+		},
+	)
+
+	logDB := false
+	testPostgres := false
+	connectStr := fmt.Sprintf("dev:dev@(localhost:%s)/dev", "13306")
+	driverName := "mysql"
+	if testPostgres {
+		connectStr = fmt.Sprintf("postgres://postgres:dev@localhost:%s/dev?sslmode=disable", "5432")
+		driverName = "postgres"
+	}
+	if logDB {
+		driverName = "instrumented-" + driverName
+	}
+	return sql.Open(driverName, connectStr)
+}
+
+func BenchmarkUncontendedReusedMutex(b *testing.B) {
+	db, err := localTestDB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	testHammerMutex(b, db, 1, b.N, true, testTableName, testLockName)
+}
+
+func BenchmarkUncontendedNewMutex(b *testing.B) {
+	db, err := localTestDB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	testHammerMutex(b, db, 1, b.N, false, testTableName, testLockName)
+}
+
+func BenchmarkLockAndUnlockNewMutex(b *testing.B) {
+	db, err := localTestDB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	options := []dbmutex.MutexOption{
+		dbmutex.WithMutexTableName(testTableName),
+		dbmutex.WithMutexName(testLockName),
+		dbmutex.WithPollInterval(time.Nanosecond),
+	}
+	for i := 0; i < b.N; i++ {
+		const maxDuration = time.Second * 30
+		ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
+		var m *dbmutex.Mutex
+		m, err = dbmutex.New(ctx, db, options...)
+		if err != nil {
+			b.Fatal(err)
+		}
+		lockAndUnlock(b, ctx, m)
+		cancelFunc()
+	}
+}
+
+func BenchmarkLockAndUnlockMutexMap(b *testing.B) {
+	db, err := localTestDB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	options := []dbmutex.MutexMapOption{
+		dbmutex.WithMutexOptions(
+			dbmutex.WithMutexTableName(testTableName),
+			dbmutex.WithPollInterval(time.Nanosecond),
+		),
+	}
+	const maxDuration = time.Second * 30
+	ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
+	defer cancelFunc()
+	mm, err := dbmutex.NewMutexMap(ctx, db, options...)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		lockAndUnlockMap(b, ctx, mm, testLockName)
+	}
+}
+
+func BenchmarkUncontendedMutexMap(b *testing.B) {
+	db, err := localTestDB()
+	if err != nil {
+		b.Fatal(err)
+	}
+	testHammerMutexMap(b, db, 1, b.N, true, testTableName, testLockName)
+}
+
+func waitForTestCompletion(t testing.TB, wg *sync.WaitGroup, d time.Duration) {
 	t.Helper()
 	if waitTimeout(wg, d) {
 		t.Error("timed out waiting to test to complete")
@@ -429,6 +598,24 @@ func testNew(t *testing.T, db *sql.DB) {
 	}
 }
 
+func TestLocalNew(t *testing.T) {
+	skipLocal(t)
+	db, err := localTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testNew(t, db)
+}
+
+func TestAllLocalDb(t *testing.T) {
+	skipLocal(t)
+	db, err := localTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAllDbTests(t, "local", db, nil)
+}
+
 func testDifferentLockTableNames(t *testing.T, db *sql.DB) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < 5; i++ {
@@ -455,6 +642,39 @@ func testDifferentLockNames(t *testing.T, db *sql.DB) {
 	}
 	const maxDuration = time.Second * 30
 	waitForTestCompletion(t, &wg, maxDuration)
+}
+
+func testManyDifferentLockNames(t *testing.T, db *sql.DB, iterations, maxName int) {
+	const maxDuration = time.Second * 30
+	ctx, cancelFunc := context.WithDeadline(context.Background(), time.Now().Add(maxDuration))
+	defer cancelFunc()
+	for i := 0; i < iterations; i++ {
+		lockName := fmt.Sprintf("%s_%d", testLockName, rand.Intn(maxName))
+		options := []dbmutex.MutexOption{
+			dbmutex.WithMutexTableName(testTableName),
+			dbmutex.WithMutexName(lockName),
+		}
+		var m *dbmutex.Mutex
+		var err error
+		m, err = dbmutex.New(ctx, db, options...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lockAndUnlock(t, ctx, m)
+	}
+}
+
+func skipLocal(tb testing.TB) {
+	tb.Skip("skipping local test")
+}
+
+func TestLocalManyDifferentLockNames(t *testing.T) {
+	skipLocal(t)
+	db, err := localTestDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testManyDifferentLockNames(t, db, 1000, 1000000)
 }
 
 func testLockCanceled(t *testing.T, db *sql.DB) {
